@@ -6,15 +6,27 @@ import (
 	"os"
 )
 
-type foo string
-
 func (f *eventHandler) GetCapabilities() ([]string, *dbus.Error) {
 	return []string{"actions", "body", "persistence"}, nil
 }
 
 func (eh *eventHandler) Notify(app_name string, replaces_id uint32, app_icon string, summary string, body string, actions []string, hints map[string]dbus.Variant, expire_timeout int32) (uint32, *dbus.Error) {
-	fmt.Println("Got notification: ", summary)
-	return replaces_id, nil
+	getId := make(chan uint32, 1)
+	eh.notify <- &notifEvent{
+		app_name:    app_name,
+		replaces_id: replaces_id,
+		app_icon:    app_icon,
+		text: notiftext{
+			summary: summary,
+			body:    body,
+		},
+		actions:        actions,
+		expire_timeout: expire_timeout,
+		id:             getId,
+	}
+
+	// this should return the ID of the notification
+	return <-getId, nil
 }
 
 func (eh *eventHandler) CloseNotification(id uint32) *dbus.Error {
@@ -42,10 +54,13 @@ func main() {
 	}
 
 	eh := NewEventHandler()
-	conn.Export(eh, "/org/freedesktop/Notifications", "org.freedesktop.Notifications")
+	conn.Export(eh, "/org/freedesktop/Notifications",
+		"org.freedesktop.Notifications")
 	if err != nil {
 		panic(err)
 	}
+
+	go WatchEvents(eh)
 
 	fmt.Println("listening")
 
