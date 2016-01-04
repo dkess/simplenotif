@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 type notiftext struct {
+	time    time.Time
 	summary string
 	body    string
 }

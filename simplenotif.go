@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/godbus/dbus"
 	"os"
+	"time"
 )
 
 func (f *eventHandler) GetCapabilities() ([]string, *dbus.Error) {
@@ -17,6 +18,7 @@ func (eh *eventHandler) Notify(app_name string, replaces_id uint32, app_icon str
 		replaces_id: replaces_id,
 		app_icon:    app_icon,
 		text: notiftext{
+			time:    time.Now(),
 			summary: summary,
 			body:    body,
 		},
