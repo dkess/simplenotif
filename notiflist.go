@@ -39,6 +39,9 @@ func notifExpireTimer(timeouts <-chan uint16, nextNotif chan<- bool) {
 			for {
 				select {
 				case waitTime = <-timeouts:
+					if waitTime == 0 {
+						break
+					}
 				case <-time.After(time.Second * time.Duration(waitTime)):
 					nextNotif <- true
 					break
@@ -148,7 +151,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 			}
 
 			if currently_showing == 0 {
-				fmt.Println("pipng")
 				nextNotif <- true
 			}
 
@@ -159,13 +161,16 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 					p.seen_by_user = true
 					if p.id == currently_showing {
 						nextNotif <- true
+						// cancels the current timer
+						timeouts <- 0
 					}
 					break
 				}
 			}
 
 		case isNewNotif := <-nextNotif:
-			fmt.Println("next notification", isNewNotif)
+			var permanentNotif *notif = nil
+			nothingToShow := true
 			for e := notifList.Front(); e != nil; e = e.Next() {
 				p := e.Value.(*notif)
 				if (!isNewNotif && p.id == currently_showing) ||
@@ -183,8 +188,13 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 					}
 
 					statuschange <- p.displayString()
+					nothingToShow = false
 					break
 				}
+			}
+
+			if nothingToShow {
+				statuschange <- ""
 			}
 		}
 	}
