@@ -61,17 +61,18 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 	// used to assign IDs to new notifications
 	var notif_counter uint32 = 1
 
-	// When the user is not "seeking" through past notifications,
-	// currently_showing is the id of the notification currently being
-	// displayed on the statusline.
+	// The id of the notification currently being displayed on the statusline.
+	// If this is 0, it means no notifications are being displayed.
 	var currently_showing uint32 = 0
+	// True if the statusline is currently showing a permanent notification.
 	showing_permanent := false
 
 	timeouts := make(chan uint16)
 
 	// If true is sent, this notification has expired.  If false is sent, that
 	// means the notification being displayed has had its text replaced.
-	nextNotif := make(chan bool, 3)
+	nextNotif := make(chan bool, 1)
+
 	go notifExpireTimer(timeouts, nextNotif)
 
 	// We use a list instead of a slice because container/list gives functions
@@ -93,7 +94,8 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 
 			if id != 0 {
 				addNewNotif = true
-				//for _, p := range notifications {
+				// Check if a notification with this id already exists in the
+				// list.
 				for e := notifList.Back(); e != nil; e = e.Prev() {
 					p := e.Value.(*notif)
 					if p.id == id {
@@ -136,7 +138,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 				notif_counter++
 			}
 
-			// Add this new notification
+			// Add a new notification to the list
 			if addNewNotif {
 				notifList.PushBack(&notif{
 					id:             id,
@@ -160,7 +162,8 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 					p.seen_by_user = true
 					if p.id == currently_showing {
 						nextNotif <- true
-						// cancels the current timer
+						// If this notification is currently being displayed,
+						// cancel its timer.
 						timeouts <- 0
 					}
 					break
@@ -168,7 +171,13 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 			}
 
 		case isNewNotif := <-nextNotif:
+			// After the following loop is over, this variable will be filled
+			// with the most recent permanent notification, if one exists.
 			var permanentNotif *notif = nil
+
+			// After the following loop is over, this variable will be true if
+			// there are no more notifications to show (other than permanent
+			// ones).
 			nothingToShow := true
 			for e := notifList.Front(); e != nil; e = e.Next() {
 				p := e.Value.(*notif)
@@ -178,7 +187,9 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 					currently_showing = p.id
 
 					if p.expire_timeout == 0 {
-						permanentNotif = p
+						if !p.seen_by_user {
+							permanentNotif = p
+						}
 					} else {
 						p.seen_by_user = true
 						if p.expire_timeout < 0 {
