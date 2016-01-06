@@ -62,9 +62,13 @@ func main() {
 		panic(err)
 	}
 
-	go WatchEvents(eh)
+	newsub := make(chan chan string)
+	delsub := make(chan chan string)
+	statuschange := make(chan string)
 
-	fmt.Println("listening")
+	go WatchSubscribers(newsub, delsub, statuschange)
 
-	select {}
+	go StartServer(newsub, delsub)
+
+	WatchEvents(eh, statuschange)
 }
