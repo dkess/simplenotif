@@ -36,15 +36,19 @@ func notifExpireTimer(timeouts <-chan uint16, nextNotif chan<- bool) {
 	for {
 		select {
 		case waitTime := <-timeouts:
+			fmt.Println("Starting initial notif timer for", waitTime)
+		Inner:
 			for {
 				select {
 				case waitTime = <-timeouts:
+					fmt.Println("extending to", waitTime)
 					if waitTime == 0 {
-						break
+						break Inner
 					}
 				case <-time.After(time.Second * time.Duration(waitTime)):
+					fmt.Println("timer expired")
 					nextNotif <- true
-					break
+					break Inner
 				}
 			}
 		}
@@ -64,6 +68,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 	// currently_showing is the id of the notification currently being
 	// displayed on the statusline.
 	var currently_showing uint32 = 0
+	showing_permanent := false
 
 	timeouts := make(chan uint16)
 
@@ -105,7 +110,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 						p.seen_by_user = false
 						addNewNotif = false
 
-						if p.id == currently_showing {
+						if p.id == currently_showing || showing_permanent {
 							nextNotif <- false
 						}
 
@@ -146,11 +151,8 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 			}
 			// Tell dbus what ID we chose for this notification
 			n.id <- id
-			for e := notifList.Front(); e != nil; e = e.Next() {
-				fmt.Println(e.Value.(*notif))
-			}
 
-			if currently_showing == 0 {
+			if currently_showing == 0 || showing_permanent {
 				nextNotif <- true
 			}
 
@@ -190,18 +192,21 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 						}
 
 						statuschange <- p.displayString()
+						showing_permanent = false
 						nothingToShow = false
+						break
 					}
 					currently_showing = p.id
-					break
 				}
 			}
 
 			if nothingToShow {
 				if permanentNotif == nil {
 					statuschange <- ""
+					showing_permanent = false
 				} else {
 					statuschange <- permanentNotif.displayString()
+					showing_permanent = true
 				}
 			}
 		}
