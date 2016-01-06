@@ -176,25 +176,33 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 				if (!isNewNotif && p.id == currently_showing) ||
 					(isNewNotif && !p.seen_by_user) {
 
-					currently_showing = p.id
-					p.seen_by_user = true
-					if p.expire_timeout < 0 {
-						// TODO: replace this with some sort of user-chosen
-						// default value, or do it based on notification
-						// urgency
-						timeouts <- 15
+					if p.expire_timeout == 0 {
+						permanentNotif = p
 					} else {
-						timeouts <- uint16(p.expire_timeout)
-					}
+						p.seen_by_user = true
+						if p.expire_timeout < 0 {
+							// TODO: replace this with some sort of user-chosen
+							// default value, or do it based on notification
+							// urgency
+							timeouts <- 15
+						} else {
+							timeouts <- uint16(p.expire_timeout)
+						}
 
-					statuschange <- p.displayString()
-					nothingToShow = false
+						statuschange <- p.displayString()
+						nothingToShow = false
+					}
+					currently_showing = p.id
 					break
 				}
 			}
 
 			if nothingToShow {
-				statuschange <- ""
+				if permanentNotif == nil {
+					statuschange <- ""
+				} else {
+					statuschange <- permanentNotif.displayString()
+				}
 			}
 		}
 	}
