@@ -153,7 +153,16 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 			}
 
 		case c := <-eh.close:
-			fmt.Println("Close notification", c)
+			for e := notifList.Front(); e != nil; e = e.Next() {
+				p := e.Value.(*notif)
+				if p.id == c {
+					p.seen_by_user = true
+					if p.id == currently_showing {
+						nextNotif <- true
+					}
+					break
+				}
+			}
 
 		case isNewNotif := <-nextNotif:
 			fmt.Println("next notification", isNewNotif)
