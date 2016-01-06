@@ -68,7 +68,8 @@ func main() {
 
 	go WatchSubscribers(newsub, delsub, statuschange)
 
-	go StartServer(newsub, delsub)
+	remote := make(chan RemoteButton)
+	go StartServer(remote, newsub, delsub)
 
-	WatchEvents(eh, statuschange)
+	WatchEvents(eh, statuschange, remote)
 }

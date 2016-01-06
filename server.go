@@ -9,7 +9,22 @@ import (
 	"strings"
 )
 
-func handleClient(conn net.Conn, newsub, delsub chan<- chan string) {
+type RemoteButton string
+
+const (
+	NextMsg    RemoteButton = "nextmsg"
+	NextNotif               = "nextnotif"
+	PrevMsg                 = "prevmsg"
+	PrevNotif               = "prevnotif"
+	Dismiss                 = "dismiss"
+	DismissAll              = "dismissall"
+	Hide                    = "hide"
+	HideAll                 = "hideall"
+)
+
+func handleClient(conn net.Conn, remote chan<- RemoteButton,
+	newsub, delsub chan<- chan string) {
+
 	defer conn.Close()
 
 	ch := make(chan string)
@@ -37,6 +52,8 @@ func handleClient(conn net.Conn, newsub, delsub chan<- chan string) {
 				defer func() {
 					delsub <- statusline
 				}()
+			} else if line != "" {
+				remote <- RemoteButton(line)
 			}
 		case status := <-statusline:
 			io.WriteString(conn, status+"\n")
@@ -46,7 +63,7 @@ func handleClient(conn net.Conn, newsub, delsub chan<- chan string) {
 	}
 }
 
-func StartServer(newsub, delsub chan<- chan string) {
+func StartServer(remote chan<- RemoteButton, newsub, delsub chan<- chan string) {
 	ln, err := net.Listen("tcp", ":8082")
 	if err != nil {
 		panic(err)
@@ -57,7 +74,7 @@ func StartServer(newsub, delsub chan<- chan string) {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error when a client connected")
 		} else {
-			go handleClient(conn, newsub, delsub)
+			go handleClient(conn, remote, newsub, delsub)
 		}
 	}
 }

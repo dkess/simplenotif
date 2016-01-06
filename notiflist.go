@@ -41,6 +41,7 @@ func notifExpireTimer(timeouts <-chan uint16, nextNotif chan<- bool) {
 				select {
 				case waitTime = <-timeouts:
 					if waitTime == 0 {
+						nextNotif <- true
 						break Inner
 					}
 				case <-time.After(time.Second * time.Duration(waitTime)):
@@ -57,7 +58,9 @@ func (n *notif) displayString() string {
 	return lastLine.summary + " | " + lastLine.body
 }
 
-func WatchEvents(eh *eventHandler, statuschange chan<- string) {
+func WatchEvents(eh *eventHandler, statuschange chan<- string,
+	remote <-chan RemoteButton) {
+
 	// used to assign IDs to new notifications
 	var notif_counter uint32 = 1
 
@@ -161,7 +164,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 				if p.id == c {
 					p.seen_by_user = true
 					if p.id == currently_showing {
-						nextNotif <- true
 						// If this notification is currently being displayed,
 						// cancel its timer.
 						timeouts <- 0
@@ -217,6 +219,56 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 					statuschange <- permanentNotif.displayString()
 					showing_permanent = true
 				}
+			}
+
+		case button := <-remote:
+			if button == Hide || button == HideAll {
+				if currently_showing != 0 {
+					if showing_permanent {
+						nextNotif <- true
+						for e := notifList.Front(); e != nil; e = e.Next() {
+							p := e.Value.(*notif)
+							if p.id == currently_showing {
+								p.seen_by_user = true
+								break
+							}
+						}
+					} else {
+						timeouts <- 0
+					}
+				}
+
+				if button == HideAll {
+					for e := notifList.Front(); e != nil; e = e.Next() {
+						p := e.Value.(*notif)
+						p.seen_by_user = true
+					}
+				}
+			} else if button == Dismiss {
+				if currently_showing != 0 {
+					for e := notifList.Front(); e != nil; e = e.Next() {
+						p := e.Value.(*notif)
+						if p.id == currently_showing {
+							if showing_permanent {
+								nextNotif <- true
+							} else {
+								timeouts <- 0
+							}
+						}
+						notifList.Remove(e)
+						break
+					}
+				}
+			} else if button == DismissAll {
+				if currently_showing != 0 {
+					if showing_permanent {
+						nextNotif <- true
+					} else {
+						timeouts <- 0
+					}
+				}
+
+				notifList = list.New()
 			}
 		}
 	}
