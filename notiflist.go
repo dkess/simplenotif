@@ -36,17 +36,14 @@ func notifExpireTimer(timeouts <-chan uint16, nextNotif chan<- bool) {
 	for {
 		select {
 		case waitTime := <-timeouts:
-			fmt.Println("Starting initial notif timer for", waitTime)
 		Inner:
 			for {
 				select {
 				case waitTime = <-timeouts:
-					fmt.Println("extending to", waitTime)
 					if waitTime == 0 {
 						break Inner
 					}
 				case <-time.After(time.Second * time.Duration(waitTime)):
-					fmt.Println("timer expired")
 					nextNotif <- true
 					break Inner
 				}
@@ -178,6 +175,8 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 				if (!isNewNotif && p.id == currently_showing) ||
 					(isNewNotif && !p.seen_by_user) {
 
+					currently_showing = p.id
+
 					if p.expire_timeout == 0 {
 						permanentNotif = p
 					} else {
@@ -196,7 +195,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string) {
 						nothingToShow = false
 						break
 					}
-					currently_showing = p.id
 				}
 			}
 

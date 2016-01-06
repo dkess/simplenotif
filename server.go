@@ -39,7 +39,6 @@ func handleClient(conn net.Conn, newsub, delsub chan<- chan string) {
 				}()
 			}
 		case status := <-statusline:
-			fmt.Println("got status", status)
 			io.WriteString(conn, status+"\n")
 		case _ = <-eCh:
 			return
