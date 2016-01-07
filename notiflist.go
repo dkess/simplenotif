@@ -215,6 +215,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 				if permanentNotif == nil {
 					statuschange <- ""
 					showing_permanent = false
+					currently_showing = 0
 				} else {
 					statuschange <- permanentNotif.displayString()
 					showing_permanent = true
