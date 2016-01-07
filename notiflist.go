@@ -182,7 +182,11 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			}
 
 		case isNewNotif := <-nextNotif:
-			// Stop any seeking that is happening
+			// A new notification should not interrupt seeking, unless seeking
+			// the seeking is over (that is, currently_showing == nil)
+			if seeking_at >= 0 && currently_showing != nil {
+				break
+			}
 			seeking_at = -1
 
 			// After the following loop is over, this variable will be filled
@@ -238,10 +242,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			on_msg := currently_showing.Value.(*notif).text[seeking_at]
 			statuschange <- Round(time.Since(on_msg.time), time.Second).String() +
 				on_msg.summary + " | " + on_msg.body
-			fmt.Println("--SEEK STATUS--")
-			fmt.Println(currently_showing.Value.(*notif))
-			fmt.Println(seeking_at)
-			fmt.Println("---------------")
 
 		case button := <-remote:
 			if button == Hide || button == HideAll {
@@ -307,13 +307,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 					}
 				}
 				if seeking_at > 0 {
-					fmt.Println("1")
 					seeking_at--
 					user_seek <- true
 				} else if seeking_at == 0 {
-					fmt.Println("2")
 					if currently_showing.Prev() != nil {
-						fmt.Println("3")
 						currently_showing = currently_showing.Prev()
 						p := currently_showing.Value.(*notif)
 						seeking_at = len(p.text) - 1
