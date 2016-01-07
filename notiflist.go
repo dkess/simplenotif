@@ -64,9 +64,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 	// used to assign IDs to new notifications
 	var notif_counter uint32 = 1
 
-	// The id of the notification currently being displayed on the statusline.
-	// If this is 0, it means no notifications are being displayed.
-	var currently_showing uint32 = 0
+	// The list element of the notification currently being displayed on the
+	// statusline.  If this is nil, it means no notifications are being
+	// displayed.
+	var currently_showing *list.Element = nil
 	// True if the statusline is currently showing a permanent notification.
 	showing_permanent := false
 
@@ -112,8 +113,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						p.seen_by_user = false
 						addNewNotif = false
 
-						if p.id == currently_showing || showing_permanent {
+						if e == currently_showing {
 							nextNotif <- false
+						} else if showing_permanent {
+							nextNotif <- true
 						}
 
 						notifList.MoveToBack(e)
@@ -150,20 +153,19 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 					actions:        n.actions,
 					expire_timeout: n.expire_timeout,
 				})
+				if currently_showing == nil || showing_permanent {
+					nextNotif <- true
+				}
 			}
 			// Tell dbus what ID we chose for this notification
 			n.id <- id
-
-			if currently_showing == 0 || showing_permanent {
-				nextNotif <- true
-			}
 
 		case c := <-eh.close:
 			for e := notifList.Front(); e != nil; e = e.Next() {
 				p := e.Value.(*notif)
 				if p.id == c {
 					p.seen_by_user = true
-					if p.id == currently_showing {
+					if e == currently_showing {
 						// If this notification is currently being displayed,
 						// cancel its timer.
 						timeouts <- 0
@@ -183,10 +185,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			nothingToShow := true
 			for e := notifList.Front(); e != nil; e = e.Next() {
 				p := e.Value.(*notif)
-				if (!isNewNotif && p.id == currently_showing) ||
+				if (!isNewNotif && e == currently_showing) ||
 					(isNewNotif && !p.seen_by_user) {
 
-					currently_showing = p.id
+					currently_showing = e
 
 					if p.expire_timeout == 0 {
 						if !p.seen_by_user {
@@ -215,7 +217,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 				if permanentNotif == nil {
 					statuschange <- ""
 					showing_permanent = false
-					currently_showing = 0
+					currently_showing = nil
 				} else {
 					statuschange <- permanentNotif.displayString()
 					showing_permanent = true
@@ -224,16 +226,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 
 		case button := <-remote:
 			if button == Hide || button == HideAll {
-				if currently_showing != 0 {
+				if currently_showing != nil {
 					if showing_permanent {
 						nextNotif <- true
-						for e := notifList.Front(); e != nil; e = e.Next() {
-							p := e.Value.(*notif)
-							if p.id == currently_showing {
-								p.seen_by_user = true
-								break
-							}
-						}
+						currently_showing.Value.(*notif).seen_by_user = true
 					} else {
 						timeouts <- 0
 					}
@@ -245,31 +241,20 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						p.seen_by_user = true
 					}
 				}
-			} else if button == Dismiss {
-				if currently_showing != 0 {
-					for e := notifList.Front(); e != nil; e = e.Next() {
-						p := e.Value.(*notif)
-						if p.id == currently_showing {
-							if showing_permanent {
-								nextNotif <- true
-							} else {
-								timeouts <- 0
-							}
-							notifList.Remove(e)
-							break
-						}
-					}
-				}
-			} else if button == DismissAll {
-				if currently_showing != 0 {
+			} else if button == Dismiss || button == DismissAll {
+				if currently_showing != nil {
 					if showing_permanent {
 						nextNotif <- true
 					} else {
 						timeouts <- 0
 					}
-				}
 
-				notifList = list.New()
+					if button == Dismiss {
+						notifList.Remove(currently_showing)
+					} else {
+						notifList = list.New()
+					}
+				}
 			}
 		}
 	}
