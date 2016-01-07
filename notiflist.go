@@ -68,6 +68,13 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 	// statusline.  If this is nil, it means no notifications are being
 	// displayed.
 	var currently_showing *list.Element = nil
+
+	// If the user is seeking through past notifications, this is the index of
+	// the text property of the notification the user is looking at. Otherwise,
+	// this is equal to -1.
+	var seeking_at int = -1
+	user_seek := make(chan bool, 1)
+
 	// True if the statusline is currently showing a permanent notification.
 	showing_permanent := false
 
@@ -175,6 +182,9 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			}
 
 		case isNewNotif := <-nextNotif:
+			// Stop any seeking that is happening
+			seeking_at = -1
+
 			// After the following loop is over, this variable will be filled
 			// with the most recent permanent notification, if one exists.
 			var permanentNotif *notif = nil
@@ -224,6 +234,15 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 				}
 			}
 
+		case <-user_seek:
+			on_msg := currently_showing.Value.(*notif).text[seeking_at]
+			statuschange <- Round(time.Since(on_msg.time), time.Second).String() +
+				on_msg.summary + " | " + on_msg.body
+			fmt.Println("--SEEK STATUS--")
+			fmt.Println(currently_showing.Value.(*notif))
+			fmt.Println(seeking_at)
+			fmt.Println("---------------")
+
 		case button := <-remote:
 			if button == Hide || button == HideAll {
 				if currently_showing != nil {
@@ -255,6 +274,83 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						notifList = list.New()
 					}
 				}
+			} else if button == NextMsg {
+				if currently_showing == nil {
+					break
+				}
+				p := currently_showing.Value.(*notif)
+				if seeking_at == len(p.text)-1 || seeking_at < 0 {
+					currently_showing = currently_showing.Next()
+					if currently_showing == nil {
+						nextNotif <- true
+						seeking_at = -1
+					} else {
+						seeking_at = 0
+						currently_showing.Value.(*notif).seen_by_user = true
+						user_seek <- true
+					}
+				} else if seeking_at >= 0 {
+					seeking_at++
+					user_seek <- true
+				}
+			} else if button == PrevMsg {
+				if seeking_at < 0 {
+					if currently_showing != nil {
+						seeking_at = len(currently_showing.Value.(*notif).text) - 1
+					} else {
+						currently_showing = notifList.Back()
+						if currently_showing != nil {
+							seeking_at = len(currently_showing.Value.(*notif).text) - 1
+							user_seek <- true
+						}
+						break
+					}
+				}
+				if seeking_at > 0 {
+					fmt.Println("1")
+					seeking_at--
+					user_seek <- true
+				} else if seeking_at == 0 {
+					fmt.Println("2")
+					if currently_showing.Prev() != nil {
+						fmt.Println("3")
+						currently_showing = currently_showing.Prev()
+						p := currently_showing.Value.(*notif)
+						seeking_at = len(p.text) - 1
+						p.seen_by_user = true
+						user_seek <- true
+					}
+				}
+			} else if button == NextNotif {
+				if currently_showing != nil {
+					currently_showing = currently_showing.Next()
+					if currently_showing != nil {
+						p := currently_showing.Value.(*notif)
+						p.seen_by_user = true
+						seeking_at = len(p.text) - 1
+						user_seek <- true
+					} else {
+						seeking_at = -1
+						nextNotif <- true
+					}
+				}
+			} else if button == PrevNotif {
+				if currently_showing == nil {
+					currently_showing = notifList.Back()
+					if currently_showing == nil {
+						break
+					}
+				} else {
+					if currently_showing.Prev() == nil {
+						break
+					} else {
+						currently_showing = currently_showing.Prev()
+					}
+				}
+				p := currently_showing.Value.(*notif)
+				p.seen_by_user = true
+				seeking_at = len(p.text) - 1
+				user_seek <- true
 			}
 		}
 	}
