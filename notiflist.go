@@ -255,9 +255,9 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 							} else {
 								timeouts <- 0
 							}
+							notifList.Remove(e)
+							break
 						}
-						notifList.Remove(e)
-						break
 					}
 				}
 			} else if button == DismissAll {

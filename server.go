@@ -46,7 +46,7 @@ func handleClient(conn net.Conn, remote chan<- RemoteButton,
 	for {
 		select {
 		case line := <-ch:
-			fmt.Println(line)
+			fmt.Println("<-", line)
 			if line == "sub" {
 				newsub <- statusline
 				defer func() {
