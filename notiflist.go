@@ -263,6 +263,11 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						p := e.Value.(*notif)
 						p.seen_by_user = true
 					}
+
+					if seeking_at >= 0 {
+						seeking_at = -1
+						currently_showing = nil
+					}
 				}
 			} else if button == Dismiss || button == DismissAll {
 				if currently_showing == nil {
