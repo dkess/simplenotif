@@ -122,7 +122,7 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 
 						if e == currently_showing {
 							nextNotif <- false
-						} else if showing_permanent {
+						} else if showing_permanent || currently_showing == nil {
 							nextNotif <- true
 						}
 
@@ -239,9 +239,11 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			}
 
 		case <-user_seek:
-			on_msg := currently_showing.Value.(*notif).text[seeking_at]
+			p := currently_showing.Value.(*notif)
+			p.seen_by_user = true
+			on_msg := p.text[seeking_at]
 			statuschange <- Round(time.Since(on_msg.time), time.Second).String() +
-				on_msg.summary + " | " + on_msg.body
+				" " + on_msg.summary + " | " + on_msg.body
 
 		case button := <-remote:
 			if button == Hide || button == HideAll {
@@ -261,7 +263,15 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 					}
 				}
 			} else if button == Dismiss || button == DismissAll {
-				if currently_showing != nil {
+				if currently_showing == nil {
+					break
+				}
+
+				if button == DismissAll {
+					notifList = list.New()
+				}
+
+				if seeking_at < 0 {
 					if showing_permanent {
 						nextNotif <- true
 					} else {
@@ -270,8 +280,22 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 
 					if button == Dismiss {
 						notifList.Remove(currently_showing)
+					}
+				} else {
+					if button == Dismiss {
+						to_remove := currently_showing
+						currently_showing = currently_showing.Next()
+						notifList.Remove(to_remove)
+
+						if currently_showing != nil {
+							seeking_at = len(currently_showing.Value.(*notif).text) - 1
+							user_seek <- true
+						} else {
+							nextNotif <- true
+						}
 					} else {
-						notifList = list.New()
+						currently_showing = nil
+						nextNotif <- true
 					}
 				}
 			} else if button == NextMsg {
@@ -286,7 +310,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						seeking_at = -1
 					} else {
 						seeking_at = 0
-						currently_showing.Value.(*notif).seen_by_user = true
 						user_seek <- true
 					}
 				} else if seeking_at >= 0 {
@@ -314,7 +337,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 						currently_showing = currently_showing.Prev()
 						p := currently_showing.Value.(*notif)
 						seeking_at = len(p.text) - 1
-						p.seen_by_user = true
 						user_seek <- true
 					}
 				}
@@ -323,7 +345,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 					currently_showing = currently_showing.Next()
 					if currently_showing != nil {
 						p := currently_showing.Value.(*notif)
-						p.seen_by_user = true
 						seeking_at = len(p.text) - 1
 						user_seek <- true
 					} else {
@@ -345,7 +366,6 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 					}
 				}
 				p := currently_showing.Value.(*notif)
-				p.seen_by_user = true
 				seeking_at = len(p.text) - 1
 				user_seek <- true
 			}
