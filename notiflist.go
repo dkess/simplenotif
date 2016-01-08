@@ -242,8 +242,10 @@ func WatchEvents(eh *eventHandler, statuschange chan<- string,
 			p := currently_showing.Value.(*notif)
 			p.seen_by_user = true
 			on_msg := p.text[seeking_at]
-			statuschange <- Round(time.Since(on_msg.time), time.Second).String() +
-				" " + on_msg.summary + " | " + on_msg.body
+			statuschange <- fmt.Sprintf("(%s ago) %s | %s",
+				Round(time.Since(on_msg.time), time.Second).String(),
+				on_msg.summary,
+				on_msg.body)
 
 		case button := <-remote:
 			if button == Hide || button == HideAll {
