@@ -36,17 +36,18 @@ func notifExpireTimer(timeouts <-chan uint16, nextNotif chan<- bool) {
 	for {
 		select {
 		case waitTime := <-timeouts:
-		Inner:
-			for {
-				select {
-				case waitTime = <-timeouts:
-					if waitTime == 0 {
+			if waitTime > 0 {
+			Inner:
+				for {
+					select {
+					case waitTime = <-timeouts:
+						if waitTime == 0 {
+							break Inner
+						}
+					case <-time.After(time.Second * time.Duration(waitTime)):
 						nextNotif <- true
 						break Inner
 					}
-				case <-time.After(time.Second * time.Duration(waitTime)):
-					nextNotif <- true
-					break Inner
 				}
 			}
 		}
@@ -58,323 +59,393 @@ func (n *notif) displayString() string {
 	return lastLine.summary + " | " + lastLine.body
 }
 
-func WatchEvents(eh *eventHandler, statuschange chan<- string,
-	remote <-chan RemoteButton) {
+type nfState struct {
+	// If a notification's expiration should be canceled, 0 is passed through
+	// this channel.  If an expiration should be extended (because the
+	// notification is being replaced), the length of the extention is passed.
+	timeouts chan<- uint16
 
-	// used to assign IDs to new notifications
-	var notif_counter uint32 = 1
+	// The channel through which statusline updates are sent.
+	statuschange chan<- string
 
-	// The list element of the notification currently being displayed on the
-	// statusline.  If this is nil, it means no notifications are being
-	// displayed.
-	var currently_showing *list.Element = nil
+	// An incrementing counter that holds the id to be assigned to the next
+	// notification.
+	notif_counter uint32
+
+	// The notification currently being displayed to the user on the statusline,
+	// or nil if no notifications are being shown.
+	currently_showing *list.Element
 
 	// If the user is seeking through past notifications, this is the index of
-	// the text property of the notification the user is looking at. Otherwise,
-	// this is equal to -1.
-	var seeking_at int = -1
-	user_seek := make(chan bool, 1)
+	// notif.text of the notification being displayed.  If the user is not
+	// seeking, this is -1. If currently_showing is nil, this must be -1.
+	seeking_at int
 
-	// True if the statusline is currently showing a permanent notification.
-	showing_permanent := false
+	//  The list of notifications.
+	// We use a list instead of a slice because container/list gives functions
+	// very specific to this problem domain.  When a new notification replaces
+	// an old one, List.MoveToBack() is used.  List traversal is easily
+	// accomplished by saving the position in currently_showing.
+	// The back of the list always contains the most recent notification. All
+	// elements are of type *notif.
+	notifList *list.List
+}
+
+func newNFState(statuschange chan<- string) (
+	*nfState,
+	<-chan uint16) {
 
 	timeouts := make(chan uint16)
 
-	// If true is sent, this notification has expired.  If false is sent, that
-	// means the notification being displayed has had its text replaced.
-	nextNotif := make(chan bool, 1)
+	return &nfState{
+		timeouts:          timeouts,
+		statuschange:      statuschange,
+		notif_counter:     1,
+		currently_showing: nil,
+		seeking_at:        -1,
+		notifList:         list.New(),
+	}, timeouts
+}
 
+func (s *nfState) updateStatus() {
+	_ = "breakpoint"
+	if s.currently_showing == nil {
+		s.statuschange <- ""
+		return
+	}
+	p := s.currently_showing.Value.(*notif)
+	var l string
+	var on_msg notiftext
+	if s.seeking_at < 0 {
+		on_msg = p.text[len(p.text)-1]
+		l = ""
+	} else {
+		on_msg = p.text[s.seeking_at]
+		l = "(" + Round(time.Since(on_msg.time), time.Second).String() + " ago) "
+	}
+
+	l += on_msg.summary + " | " + on_msg.body
+	s.statuschange <- l
+}
+
+func (s *nfState) nextStatus(isNewNotif bool) {
+	// A new notification should not interrupt seeking, unless seeking
+	// the seeking is over (that is, currently_showing == nil)
+	if s.seeking_at >= 0 && s.currently_showing != nil {
+		return
+	}
+	s.seeking_at = -1
+
+	// After the following loop is over, this variable will be filled
+	// with the most recent permanent notification, if one exists.
+	var permanentNotif *notif = nil
+
+	// After the following loop is over, this variable will be true if
+	// there are no more notifications to show (other than permanent
+	// ones).
+	nothingToShow := true
+
+	for e := s.notifList.Front(); e != nil; e = e.Next() {
+		p := e.Value.(*notif)
+		if (!isNewNotif && e == s.currently_showing) ||
+			(isNewNotif && !p.seen_by_user) {
+
+			s.currently_showing = e
+
+			if p.expire_timeout == 0 {
+				if !p.seen_by_user {
+					permanentNotif = p
+				}
+			} else {
+				p.seen_by_user = true
+				if p.expire_timeout < 0 {
+					// TODO: replace this with a user-chosen value, or perhaps
+					// make it based on notification urgency
+					s.timeouts <- 15
+				} else {
+					s.timeouts <- uint16(p.expire_timeout)
+				}
+
+				s.updateStatus()
+				nothingToShow = false
+				break
+			}
+		}
+	}
+
+	if nothingToShow {
+		if permanentNotif == nil {
+			s.currently_showing = nil
+		}
+		s.updateStatus()
+	}
+}
+
+func (s *nfState) HandleNotifEvent(n *notifEvent) {
+	id := n.replaces_id
+
+	// If addNewNotif becomes true, it means a new entry must be added to the
+	// list of notifications, (instead of appending content to an already
+	// existing one).
+	addNewNotif := false
+
+	if id != 0 {
+		addNewNotif = true
+		// Check if a notification with this id already exists in the
+		// list.
+		for e := s.notifList.Back(); e != nil; e = e.Prev() {
+			p := e.Value.(*notif)
+			if p.id == id {
+				// replace this notification with new properties, and
+				// append the new text
+				p.app_name = n.app_name
+				p.app_icon = n.app_icon
+				p.text = append(p.text, n.text)
+				p.actions = n.actions
+				p.expire_timeout = n.expire_timeout
+				p.seen_by_user = false
+				addNewNotif = false
+
+				if e == s.currently_showing {
+					s.nextStatus(false)
+				} else if s.currently_showing == nil ||
+					s.currently_showing.Value.(*notif).expire_timeout == 0 {
+
+					s.nextStatus(true)
+				}
+
+				s.notifList.MoveToBack(e)
+				break
+			}
+		}
+	} else {
+		// Generate a new notification ID based on the counter, but
+		// make sure it isn't already being used by another
+		// notification.  If it is, keep incrementing the counter until
+		// an unused ID is found.
+		addNewNotif = true
+	Outer:
+		for {
+			for e := s.notifList.Front(); e != nil; e = e.Next() {
+				p := e.Value.(*notif)
+				if p.id == s.notif_counter {
+					s.notif_counter++
+					continue Outer
+				}
+			}
+			break
+		}
+		id = s.notif_counter
+		s.notif_counter++
+	}
+
+	// Add a new notification to the list
+	if addNewNotif {
+		s.notifList.PushBack(&notif{
+			id:             id,
+			app_name:       n.app_name,
+			text:           []notiftext{n.text},
+			actions:        n.actions,
+			expire_timeout: n.expire_timeout,
+		})
+
+		// The statusline should only be updated if it's not showing anything
+		// currently (because if it is, the new content will eventually be shown
+		// after timeouts expire).  But if a permanent notification is being
+		// shown, the new notification should be displayed now because it will
+		// never timeout.
+		if s.currently_showing == nil ||
+			s.currently_showing.Value.(*notif).expire_timeout == 0 {
+
+			s.nextStatus(true)
+		}
+	}
+	// Tell dbus what ID we chose for this notification
+	n.id <- id
+}
+
+func (s *nfState) HideNotif(id uint32) {
+	var toHide *notif = nil
+
+	if s.currently_showing.Value.(*notif).id == id {
+		toHide = s.currently_showing.Value.(*notif)
+
+		if s.seeking_at <= 0 {
+			s.timeouts <- 0
+			defer s.nextStatus(true)
+		}
+	} else {
+		for e := s.notifList.Front(); e != nil; e = e.Next() {
+			if e.Value.(*notif).id == id {
+				toHide = e.Value.(*notif)
+				break
+			}
+		}
+	}
+
+	toHide.seen_by_user = true
+}
+
+func (s *nfState) HideAllNotifs() {
+	if s.currently_showing != nil {
+		defer s.updateStatus()
+	}
+
+	for e := s.notifList.Front(); e != nil; e = e.Next() {
+		e.Value.(*notif).seen_by_user = true
+	}
+
+	s.timeouts <- 0
+	s.seeking_at = -1
+	s.currently_showing = nil
+}
+
+func (s *nfState) DismissCurrent() {
+	if s.currently_showing == nil {
+		return
+	}
+	if s.seeking_at <= 0 {
+		s.timeouts <- 0
+		defer s.updateStatus()
+	}
+
+	toRemove := s.currently_showing
+	s.currently_showing = s.currently_showing.Next()
+	s.notifList.Remove(toRemove)
+
+	if s.seeking_at > 0 {
+		if s.currently_showing != nil {
+			s.seeking_at = len(s.currently_showing.Value.(*notif).text) - 1
+			s.updateStatus()
+		} else {
+			s.seeking_at = -1
+			s.nextStatus(true)
+		}
+	}
+}
+
+func (s *nfState) DismissAll() {
+	s.notifList = list.New()
+	s.seeking_at = -1
+	s.timeouts <- 0
+	s.nextStatus(true)
+}
+
+func (s *nfState) SeekNextMsg() {
+	if s.currently_showing == nil {
+		return
+	}
+	p := s.currently_showing.Value.(*notif)
+	if s.seeking_at == len(p.text)-1 || s.seeking_at < 0 {
+		s.currently_showing = s.currently_showing.Next()
+		if s.currently_showing == nil {
+			s.seeking_at = -1
+			s.nextStatus(true)
+		} else {
+			s.seeking_at = 0
+			s.updateStatus()
+		}
+	} else if s.seeking_at >= 0 {
+		s.seeking_at++
+		s.updateStatus()
+	}
+}
+
+func (s *nfState) SeekPrevMsg() {
+	if s.seeking_at < 0 {
+		s.timeouts <- 0
+		if s.currently_showing != nil {
+			s.seeking_at = len(s.currently_showing.Value.(*notif).text) - 1
+		} else {
+			s.currently_showing = s.notifList.Back()
+			if s.currently_showing != nil {
+				s.seeking_at = len(s.currently_showing.Value.(*notif).text) - 1
+				s.updateStatus()
+			}
+			return
+		}
+	}
+	if s.seeking_at > 0 {
+		s.seeking_at--
+		s.updateStatus()
+	} else if s.seeking_at == 0 {
+		if s.currently_showing.Prev() != nil {
+			s.currently_showing = s.currently_showing.Prev()
+			p := s.currently_showing.Value.(*notif)
+			s.seeking_at = len(p.text) - 1
+			s.updateStatus()
+		}
+	}
+}
+
+func (s *nfState) SeekNextNotif() {
+	if s.currently_showing != nil {
+		s.currently_showing = s.currently_showing.Next()
+		if s.currently_showing != nil {
+			p := s.currently_showing.Value.(*notif)
+			s.seeking_at = len(p.text) - 1
+			s.updateStatus()
+		} else {
+			s.seeking_at = -1
+			s.nextStatus(true)
+		}
+	}
+}
+
+func (s *nfState) SeekPrevNotif() {
+	if s.currently_showing == nil {
+		s.currently_showing = s.notifList.Back()
+		if s.currently_showing == nil {
+			return
+		}
+	} else {
+		if s.currently_showing.Prev() == nil {
+			return
+		} else {
+			s.currently_showing = s.currently_showing.Prev()
+		}
+	}
+	p := s.currently_showing.Value.(*notif)
+	s.seeking_at = len(p.text) - 1
+	s.updateStatus()
+}
+
+func WatchEvents(eh *eventHandler, statuschange chan<- string,
+	remote <-chan RemoteButton) {
+
+	nfs, timeouts := newNFState(statuschange)
+	nextNotif := make(chan bool)
 	go notifExpireTimer(timeouts, nextNotif)
 
-	// We use a list instead of a slice because container/list gives functions
-	// very specific to this problem domain.  When a new notification replaces
-	// an old one, List.MoveToBack() is used.  List traversal is also very
-	// common and necessary.
-	// The back of the list always contains the most recent notification. All
-	// elements are of type *notif.
-	notifList := list.New()
 	for {
 		select {
 		case n := <-eh.notify:
 			fmt.Println("Got notification", n)
-			id := n.replaces_id
-
-			// If addNewNotif is true, it means we have to add a new entry
-			// to our list of notifications, (instead of replacing an old one)
-			addNewNotif := false
-
-			if id != 0 {
-				addNewNotif = true
-				// Check if a notification with this id already exists in the
-				// list.
-				for e := notifList.Back(); e != nil; e = e.Prev() {
-					p := e.Value.(*notif)
-					if p.id == id {
-						// replace this notification with new properties, and
-						// append the new text
-						p.app_name = n.app_name
-						p.app_icon = n.app_icon
-						p.text = append(p.text, n.text)
-						p.actions = n.actions
-						p.expire_timeout = n.expire_timeout
-						p.seen_by_user = false
-						addNewNotif = false
-
-						if e == currently_showing {
-							nextNotif <- false
-						} else if showing_permanent || currently_showing == nil {
-							nextNotif <- true
-						}
-
-						notifList.MoveToBack(e)
-						break
-					}
-				}
-			} else {
-				// Generate a new notification ID based on the counter, but
-				// make sure it isn't already being used by another
-				// notification.  If it is, keep incrementing the counter until
-				// an unused ID is found.
-				addNewNotif = true
-			Outer:
-				for {
-					for e := notifList.Front(); e != nil; e = e.Next() {
-						p := e.Value.(*notif)
-						if p.id == notif_counter {
-							notif_counter++
-							continue Outer
-						}
-					}
-					break
-				}
-				id = notif_counter
-				notif_counter++
-			}
-
-			// Add a new notification to the list
-			if addNewNotif {
-				notifList.PushBack(&notif{
-					id:             id,
-					app_name:       n.app_name,
-					text:           []notiftext{n.text},
-					actions:        n.actions,
-					expire_timeout: n.expire_timeout,
-				})
-				if currently_showing == nil || showing_permanent {
-					nextNotif <- true
-				}
-			}
-			// Tell dbus what ID we chose for this notification
-			n.id <- id
+			nfs.HandleNotifEvent(n)
 
 		case c := <-eh.close:
-			for e := notifList.Front(); e != nil; e = e.Next() {
-				p := e.Value.(*notif)
-				if p.id == c {
-					p.seen_by_user = true
-					if e == currently_showing {
-						// If this notification is currently being displayed,
-						// cancel its timer.
-						timeouts <- 0
-					}
-					break
-				}
-			}
+			nfs.HideNotif(c)
 
 		case isNewNotif := <-nextNotif:
-			// A new notification should not interrupt seeking, unless seeking
-			// the seeking is over (that is, currently_showing == nil)
-			if seeking_at >= 0 && currently_showing != nil {
-				break
-			}
-			seeking_at = -1
-
-			// After the following loop is over, this variable will be filled
-			// with the most recent permanent notification, if one exists.
-			var permanentNotif *notif = nil
-
-			// After the following loop is over, this variable will be true if
-			// there are no more notifications to show (other than permanent
-			// ones).
-			nothingToShow := true
-			for e := notifList.Front(); e != nil; e = e.Next() {
-				p := e.Value.(*notif)
-				if (!isNewNotif && e == currently_showing) ||
-					(isNewNotif && !p.seen_by_user) {
-
-					currently_showing = e
-
-					if p.expire_timeout == 0 {
-						if !p.seen_by_user {
-							permanentNotif = p
-						}
-					} else {
-						p.seen_by_user = true
-						if p.expire_timeout < 0 {
-							// TODO: replace this with some sort of user-chosen
-							// default value, or do it based on notification
-							// urgency
-							timeouts <- 15
-						} else {
-							timeouts <- uint16(p.expire_timeout)
-						}
-
-						statuschange <- p.displayString()
-						showing_permanent = false
-						nothingToShow = false
-						break
-					}
-				}
-			}
-
-			if nothingToShow {
-				if permanentNotif == nil {
-					statuschange <- ""
-					showing_permanent = false
-					currently_showing = nil
-				} else {
-					statuschange <- permanentNotif.displayString()
-					showing_permanent = true
-				}
-			}
-
-		case <-user_seek:
-			p := currently_showing.Value.(*notif)
-			p.seen_by_user = true
-			on_msg := p.text[seeking_at]
-			statuschange <- fmt.Sprintf("(%s ago) %s | %s",
-				Round(time.Since(on_msg.time), time.Second).String(),
-				on_msg.summary,
-				on_msg.body)
+			nfs.nextStatus(isNewNotif)
 
 		case button := <-remote:
-			if button == Hide || button == HideAll {
-				if currently_showing != nil {
-					if showing_permanent {
-						nextNotif <- true
-						currently_showing.Value.(*notif).seen_by_user = true
-					} else {
-						timeouts <- 0
-					}
-				}
-
-				if button == HideAll {
-					for e := notifList.Front(); e != nil; e = e.Next() {
-						p := e.Value.(*notif)
-						p.seen_by_user = true
-					}
-
-					if seeking_at >= 0 {
-						seeking_at = -1
-						currently_showing = nil
-					}
-				}
-			} else if button == Dismiss || button == DismissAll {
-				if currently_showing == nil {
-					break
-				}
-
-				if button == DismissAll {
-					notifList = list.New()
-				}
-
-				if seeking_at < 0 {
-					if showing_permanent {
-						nextNotif <- true
-					} else {
-						timeouts <- 0
-					}
-
-					if button == Dismiss {
-						notifList.Remove(currently_showing)
-					}
-				} else {
-					if button == Dismiss {
-						to_remove := currently_showing
-						currently_showing = currently_showing.Next()
-						notifList.Remove(to_remove)
-
-						if currently_showing != nil {
-							seeking_at = len(currently_showing.Value.(*notif).text) - 1
-							user_seek <- true
-						} else {
-							nextNotif <- true
-						}
-					} else {
-						currently_showing = nil
-						nextNotif <- true
-					}
-				}
+			if button == Hide {
+				nfs.HideNotif(nfs.currently_showing.Value.(*notif).id)
+			} else if button == HideAll {
+				nfs.HideAllNotifs()
+			} else if button == Dismiss {
+				nfs.DismissCurrent()
+			} else if button == DismissAll {
+				nfs.DismissAll()
 			} else if button == NextMsg {
-				if currently_showing == nil {
-					break
-				}
-				p := currently_showing.Value.(*notif)
-				if seeking_at == len(p.text)-1 || seeking_at < 0 {
-					currently_showing = currently_showing.Next()
-					if currently_showing == nil {
-						nextNotif <- true
-						seeking_at = -1
-					} else {
-						seeking_at = 0
-						user_seek <- true
-					}
-				} else if seeking_at >= 0 {
-					seeking_at++
-					user_seek <- true
-				}
+				nfs.SeekNextMsg()
 			} else if button == PrevMsg {
-				if seeking_at < 0 {
-					if currently_showing != nil {
-						seeking_at = len(currently_showing.Value.(*notif).text) - 1
-					} else {
-						currently_showing = notifList.Back()
-						if currently_showing != nil {
-							seeking_at = len(currently_showing.Value.(*notif).text) - 1
-							user_seek <- true
-						}
-						break
-					}
-				}
-				if seeking_at > 0 {
-					seeking_at--
-					user_seek <- true
-				} else if seeking_at == 0 {
-					if currently_showing.Prev() != nil {
-						currently_showing = currently_showing.Prev()
-						p := currently_showing.Value.(*notif)
-						seeking_at = len(p.text) - 1
-						user_seek <- true
-					}
-				}
+				nfs.SeekPrevMsg()
 			} else if button == NextNotif {
-				if currently_showing != nil {
-					currently_showing = currently_showing.Next()
-					if currently_showing != nil {
-						p := currently_showing.Value.(*notif)
-						seeking_at = len(p.text) - 1
-						user_seek <- true
-					} else {
-						seeking_at = -1
-						nextNotif <- true
-					}
-				}
+				nfs.SeekNextNotif()
 			} else if button == PrevNotif {
-				if currently_showing == nil {
-					currently_showing = notifList.Back()
-					if currently_showing == nil {
-						break
-					}
-				} else {
-					if currently_showing.Prev() == nil {
-						break
-					} else {
-						currently_showing = currently_showing.Prev()
-					}
-				}
-				p := currently_showing.Value.(*notif)
-				seeking_at = len(p.text) - 1
-				user_seek <- true
+				nfs.SeekPrevNotif()
 			}
 		}
 	}

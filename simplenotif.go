@@ -12,7 +12,7 @@ func (f *eventHandler) GetCapabilities() ([]string, *dbus.Error) {
 }
 
 func (eh *eventHandler) Notify(app_name string, replaces_id uint32, app_icon string, summary string, body string, actions []string, hints map[string]dbus.Variant, expire_timeout int32) (uint32, *dbus.Error) {
-	getId := make(chan uint32, 1)
+	getId := make(chan uint32)
 	eh.notify <- &notifEvent{
 		app_name:    app_name,
 		replaces_id: replaces_id,
